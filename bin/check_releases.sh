@@ -7,8 +7,10 @@
 
 set -ue
 
-# This checks upstrean ${sourceGitHubRepository} releases and compares it
+# This checks upstream ${sourceGitHubRepository} releases and compares them
 # with the released versions on https://archive.tetratelabs.io/envoy/envoy-versions.json.
+# When a new version is found and its Docker image is available, it triggers
+# the release workflow for both production and debug builds.
 
 # Ensure we have tools we need installed
 curl --version >/dev/null
@@ -25,6 +27,20 @@ curl="curl -fsSL"
 githubToken=${GITHUB_TOKEN:-}
 # Prepare authorization header when performing request to api.github.com to avoid rate limiting, especially when testing locally.
 authorizationHeader="Authorization: Bearer ${githubToken}"
+
+# docker_image_exists checks the Docker Hub registry API for a manifest.
+# Returns 0 if the image:tag exists, 1 otherwise.
+docker_image_exists() {
+  local image=$1 tag=$2
+  local token
+  token=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${image}:pull" | jq -r '.token')
+  local status
+  status=$(curl -fsSL -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+    "https://registry-1.docker.io/v2/${image}/manifests/${tag}" 2>/dev/null)
+  [ "${status}" = "200" ]
+}
 
 # Always use the released versions.
 currentVersions=$(${curl} https://archive.tetratelabs.io/envoy/envoy-versions.json)
@@ -45,13 +61,17 @@ for ((page = 1; page <= lastReleasePage; page++)); do
       continue
     fi
 
-    if [[ "$(echo -e "${version#v}\n${lowestVersion}" | sort -V | tail -n 1)" == "${version#v}" ]]; then
-      echo "creating release for"' '"${version}"
-      gh workflow run release.yaml -f version="${version}"_debug -R "${targetGitHubRepository}"
-      gh workflow run release.yaml -f version="${version}" -R "${targetGitHubRepository}"
+    if [[ "$(echo -e "${version#v}\n${lowestVersion}" | sort -V | tail -n 1)" != "${version#v}" ]]; then
+      continue
     fi
 
-    # TODO(dio): For macOS, we still need to check for https://ghcr.io/v2/homebrew/core/envoy/tags/list and see if
-    # our released JSON has darwin tarballs in it.
+    if ! docker_image_exists envoyproxy/envoy "${version}"; then
+      echo "skipping ${version}: Docker image not yet available"
+      continue
+    fi
+
+    echo "creating release for ${version}"
+    ${DRY_RUN:-} gh workflow run release.yaml -f version="${version}"_debug -R "${targetGitHubRepository}"
+    ${DRY_RUN:-} gh workflow run release.yaml -f version="${version}" -R "${targetGitHubRepository}"
   done
 done

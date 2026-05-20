@@ -24,6 +24,16 @@ branches. This keeps release count and maintenance bounded, and avoids
 notifying repository watchers daily.
 
 
+## Why does auto-release check Docker Hub before triggering?
+
+Envoy's Docker images appear on Docker Hub 3-6 hours after the GitHub release
+tag is created. The release workflow pulls binaries from
+`envoyproxy/envoy:vX.Y.Z`, so triggering before the image exists fails the
+job. Rather than add retry logic to the release workflow, the auto-release
+script checks the Docker Hub registry API and skips versions whose images are
+not ready. The 6-hour cron interval means those versions get picked up on the
+next run.
+
 ---
 [envoy-publish]: https://github.com/envoyproxy/envoy/blob/main/.github/workflows/envoy-publish.yml
 [dockerhub-dev]: https://hub.docker.com/r/envoyproxy/envoy/tags?name=dev-
